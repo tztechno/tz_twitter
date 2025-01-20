@@ -1,0 +1,167 @@
+<html>
+    <head>
+        <meta charset="UTF-8">
+        <title>Twitter Data 抽出ページ</title>
+
+        <style>
+            body {
+                background-color: aliceblue;
+            }
+            h1 {
+                margin: 1rem;
+            }
+            .explanation {
+                padding: 1rem;
+            }
+            .settings, .how-to{
+                padding: 1em;
+                background-color: rgba(255, 251, 246, 0.8);
+                border: 1px dotted gainsboro
+            }
+            .button {
+                padding: 0.5rem 1rem;
+                background-color: #4CAF50;
+                color: white;
+                border: none;
+                cursor: pointer;
+                margin-top: 1rem;
+            }
+            .hidden {
+                display: none;
+            }
+            .clickable {
+                cursor: pointer;
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <h1>ツイートまとめ支援ツール</h2>
+        <h2 onclick="show('how-to')" class="clickable">説明と使い方</h2>
+        <div id="how-to" class="how-to hidden">
+            日付や検索ワードでツイートを検索し、それに対するリプライも全部くっつけて表示するためのツールです。<br />
+            主に創作物の頭に特定タグをつけてSSを上げている人のバックアップ向け。
+            <ol>
+                <li>twitter(X)からアーカイブをダウンロード</li>
+                <li>ダウンロードしたアーカイブを解凍</li>
+                <li>アーカイブ内のdataフォルダ内にtweets.jsがあるので、この冒頭の「window.YTD.tweets.part0」を「const tweets」に書き換える</li>
+                <li>解凍したフォルダの直下にこのファイルを置いて(dataやYour archive.htmlと並んでいればOK）、開く</li>
+                <li>設定欄で、日付や検索ワード、日付情報のフォーマットを任意で設定</li>
+                <li>「実行」を押すと、下にズラッと抽出結果が出ます</li>
+            </ol>
+
+        </div>
+
+        <h2>いざ出力</h2>
+        デフォルトは過去一ヶ月分です。<br />
+        <h3 onclick="show('settings')" class="clickable">設定欄</h3>
+        <div id="settings" class="settings hidden">
+            <form style="margin-top: 0.5rem;">
+                開始日：<input name="start" id="start" type="date" value=""><br />
+                終了日：<input name="end" id="end" type="date" value=""><br />
+                検索ワード：<input name="keyword" id="keyword" type="text" value=""><br />
+                日付情報のフォーマット(###が日付に置き換わります）：<input name="date_format" id="date_format" type="text" value="[日時:###]"><br />
+            </form>
+        </div>
+        <button type="button" class="button" onclick="filter()">実行</button> 
+
+        <h2>以下に出力が表示されます</h2>
+        <div id="output"></div>
+
+        <script src="./data/tweets.js"></script>
+        <script>
+            const startDateElement = document.getElementById('start')
+            const startDate = new Date();
+            startDate.setMonth(startDate.getMonth() - 1);
+            startDateElement.valueAsDate = startDate;
+
+            // 今日を設定
+            const endDate = new Date();
+            endDate.setMonth(endDate.getMonth());
+            const endDateElement = document.getElementById('end');
+            endDateElement.valueAsDate = endDate;
+
+            function show(id){
+                const element = document.getElementById(id);
+                element.classList.toggle('hidden');
+            }
+
+            function filter(){
+                const dateFiltered = dateFilterTweets(tweets);
+                const text_filtered = textFilterTweets(dateFiltered)
+                const sortedTweets = text_filtered.sort((a, b) => new Date(b.tweet.created_at) - new Date(a.tweet.created_at));
+                const parentTweets = [].concat(tweetsWithChildren(sortedTweets).sort((a, b) => new Date(a.tweet.created_at) - new Date(b.tweet.created_at)))
+                const dateFormat = document.getElementById('date_format').value
+                // id=outputのところに、日付とテキストを表示する
+                const outputDiv = document.getElementById('output');
+                outputDiv.textContent = '';
+                parentTweets.forEach(tweet => {
+                    const date = new Date(tweet.tweet.created_at)
+                    const textElement = document.createElement('pre');
+                    textElement.textContent = dateFormat.replace('###', formatDate(date))
+                    // タグを除去し、エスケープされた>を復元する
+                    textElement.textContent += "\n\n" + tweet.tweet.finalText.replace(/#[^\s]+/g, '').replace('&gt;','>').trim() + "\n"
+                    outputDiv.appendChild(textElement);
+                });
+            }
+
+            // 日付でフィルタリング
+            function dateFilterTweets(tweets) {
+                const startDate = document.getElementById('start');
+                const endDate = document.getElementById('end');
+                const condition = (tweet) => {
+                    const tweetDate = new Date(tweet.created_at);
+                    return tweetDate >= startDate.valueAsDate && tweetDate <= endDate.valueAsDate;
+                };
+                return tweets.filter(tweet => condition(tweet.tweet));
+            }
+
+            function textFilterTweets(tweets){
+                const keyword = document.getElementById('keyword');
+                return tweets.filter(tweet => tweet.tweet.full_text.includes(keyword.value));
+            }
+
+            // 日付の昇順並べ替え済みのtweetsを使い、リプライを親ツイートのテキストにくっつける。
+            function tweetsWithChildren(tweets){
+                // リプライでないツイートだけを取得
+                const firstTweets = tweets.filter(tweet => !tweet.reply_to_status_id);
+                const dateFormat = document.getElementById('date_format').value
+
+                // 親ツイートに対し、リプライがあれば芋づる式にテキストをくっつけていく
+                firstTweets.forEach(tweet => {
+                    let prevTweetCreatedAt = tweet.tweet.created_at;
+                    tweet.tweet.finalText = tweet.tweet.full_text
+                    tweet.children = getReplies(tweet.tweet.id)
+                    tweet.children.forEach(childTweet => {
+                        // 一つ親のツイートからこの子ツイートの投稿までに2時間以上経っているかチェック
+                        const diffTimeMinutes = (new Date(childTweet.tweet.created_at) - new Date(prevTweetCreatedAt)) / (1000 * 60);
+                        prevTweetCreatedAt = childTweet.tweet.created_at;
+                        if(diffTimeMinutes >= 120){
+                            tweet.tweet.finalText += `\n\n${dateFormat.replace('###', formatDate(childTweet.tweet.created_at))}`;
+                        }
+                        // リプライのテキストを追加する
+                        tweet.tweet.finalText += `\n\n${childTweet.tweet.full_text}`;
+                    });
+                });
+                return firstTweets;
+            }
+
+            // 再帰処理：そのツイートにリプライがあれば、リプライの内容を取得して返す。リプライのリプライの・・・も全部取得する。
+            function getReplies(tweetId, repliesPrev = []) {
+                const replies = tweets.filter(t => t.tweet.in_reply_to_status_id === tweetId);
+                replies.forEach(reply => {
+                    repliesPrev = repliesPrev.concat(getReplies(reply.tweet.id, replies))
+                })
+                return repliesPrev
+            }
+
+            function formatDate(dateString){
+                const date = new Date(dateString)
+                const year = date.getFullYear();
+                const month = String(date.getMonth() + 1);
+                const day = String(date.getDate());
+                return `${year}/${month}/${day}`;
+            }
+        </script>
+    </body>
+</html>
